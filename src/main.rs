@@ -18,9 +18,10 @@ struct Request {
     path: String,
     version: String,
     user_agent: String,
+    body: Vec<u8>,
 }
 
-fn parse_request(request_string: &str) -> Request {
+fn parse_request(request_string: &str, body_buf: Vec<u8>) -> Request {
     let parts: Vec<&str> = request_string.split_whitespace().collect();
     let http_verb = parts[0].to_string();
     let path = parts[1].to_string();
@@ -32,6 +33,7 @@ fn parse_request(request_string: &str) -> Request {
             path: path,
             version: version,
             user_agent: "None".to_string(),
+            body: body_buf,
         };
     }
 
@@ -40,6 +42,7 @@ fn parse_request(request_string: &str) -> Request {
         path: path,
         version: version,
         user_agent: parts[idx.unwrap() + 1].to_string(),
+        body: body_buf,
     };
 }
 
@@ -101,6 +104,8 @@ fn respond_to_request(stream: &mut TcpStream, req: Request, base_dir: path::Path
                     sub_path = format!("{}", &sub_path[1..]);
                 }
                 let target = base_dir.join(path::PathBuf::from(&sub_path));
+                let _ = fs::write(target, req.body);
+                let _ = stream.write(b"HTTP/1.1 201 Created\r\n\r\n");
             }
             _ => {
                 let _ = stream.write(b"HTTP/1.1 404 Not found\r\n\r\n");
@@ -111,12 +116,21 @@ fn respond_to_request(stream: &mut TcpStream, req: Request, base_dir: path::Path
 }
 
 fn handle_stream(mut stream: TcpStream, base_dir: path::PathBuf) {
-    let mut request_buffer = vec![0; 128];
+    let mut request_buffer = vec![0; 1024];
     match stream.read(&mut request_buffer) {
         Ok(_) => {
-            let req = parse_request(&String::from_utf8_lossy(&request_buffer));
-            dbg!(&req);
-            respond_to_request(&mut stream, req, base_dir);
+            let req_string = String::from_utf8(request_buffer.clone()).unwrap();
+            dbg!(&req_string);
+            if let Some(body_index) = req_string.find("\r\n\r\n") {
+                let body_string = &req_string[body_index + 4..].replace("\0", "");
+                let req = parse_request(
+                    &String::from_utf8_lossy(&request_buffer),
+                    body_string.clone().into_bytes(),
+                );
+                respond_to_request(&mut stream, req, base_dir);
+            } else {
+                println!("Invalid request!");
+            }
         }
         Err(e) => {
             println!("{:?}", e);
